@@ -1,0 +1,292 @@
+#Projektbas:
+#Skapad för att generera trafik till en switch.
+#Kimi Autto 25-02-27
+#Packetester
+
+PacketTester/
+├── gui/
+│   ├── __init__.py
+│   └── huvud_gui.py      # GUI-fronten
+├── packet_generator/
+│   ├── __init__.py
+│   └── generator.py      # Genererar PCAP med Scapy
+├── replay/
+│   ├── __init__.py
+│   └── återspelning.py   # Hanterar tcpreplay
+└── main.py               # Startpunkt för appen
+
+
+
+#Modul för att generera PCAP-filer, 
+#Kimi Autto 25-02-27
+#packet_generator/generator.py
+
+from scapy.all import Ether, IP, TCP, UDP, ICMP, RandIP, RandMAC, RandShort, wrpcap
+import random
+
+def generera_pcap(antal_paket, utfil):
+    # Lista för att lagra paketen
+    paketlista = []
+    
+    # Skapa paket
+    for i in range(antal_paket):
+        kalla_ip = RandIP()._fix()  # Slumpmässig käll-IP
+        mal_ip = RandIP()._fix()    # Slumpmässig mål-IP
+        kalla_mac = RandMAC()._fix()  # Slumpmässig käll-MAC
+        mal_mac = RandMAC()._fix()    # Slumpmässig mål-MAC
+
+        # Välj protokoll slumpmässigt: TCP (50%), UDP (30%), ICMP (20%)
+        protokoll = random.choices(["tcp", "udp", "icmp"], weights=[50, 30, 20], k=1)[0]
+        eth = Ether(src=kalla_mac, dst=mal_mac)
+
+        if protokoll == "tcp":
+            paket = eth / IP(src=kalla_ip, dst=mal_ip) / TCP(sport=RandShort(), dport=RandShort(), flags="S")
+        elif protokoll == "udp":
+            paket = eth / IP(src=kalla_ip, dst=mal_ip) / UDP(sport=RandShort(), dport=RandShort())
+        else:  # icmp
+            paket = eth / IP(src=kalla_ip, dst=mal_ip) / ICMP()
+
+        paketlista.append(paket)
+
+    # Spara paketen till en PCAP-fil
+    wrpcap(utfil, paketlista)
+    return f"Skapade {antal_paket} paket till {utfil}"
+
+
+# Modul för återspelning med TCPreplay
+# Kimi Autto 25-02-27
+
+# replay/aterspelning.py
+
+import curses
+import os
+import time
+from netstat_module import run_netstat
+from whois_module import run_whois
+from nmap_module import run_nmap
+from deep_nmap_module import run_deep_nmap, ensure_netstat_before_nmap
+from results_module import show_results
+from pcap_module import run_pcap_capture, run_pcap_capture_all
+from ss_module import run_ss
+
+def update_status(stdscr, message):
+    stdscr.clear()
+    stdscr.addstr(0, 0, message)
+    stdscr.refresh()
+    time.sleep(1)
+
+def run_all(output_dir, stdscr):
+    # Try running netstat first, fall back to ss if no connections
+    update_status(stdscr, "Running Netstat (IPv4/IPv6)...")
+    connections = run_netstat(output_dir)
+
+    if not connections:
+        update_status(stdscr, "No active connections found with Netstat. Trying SS (IPv4/IPv6)...")
+        connections = run_ss(output_dir)
+        if not connections:
+            update_status(stdscr, "No active connections found with SS.")
+            return
+
+    update_status(stdscr, "Running Whois for connections (IPv4/IPv6)...")
+    for conn in connections:
+        update_status(stdscr, f"Running Whois for {conn['remote_address']}...")
+        run_whois(conn['remote_address'], output_dir)
+
+    update_status(stdscr, "Running Nmap for connections (IPv4/IPv6)...")
+    for conn in connections:
+        update_status(stdscr, f"Running Nmap for {conn['remote_address']}...")
+        run_nmap(conn['remote_address'], output_dir)
+
+    update_status(stdscr, "Run All completed.")
+
+def main_menu(stdscr):
+    curses.curs_set(0)
+    current_row = 0
+    options = ["Run All (Netstat, Whois, Nmap, SS, IPv4/IPv6)", "Run Netstat (IPv4/IPv6)", "Run SS (IPv4/IPv6)", "Run Whois for All IPs (IPv4/IPv6)", "Run Nmap for All Connections (IPv4/IPv6)",
+               "Run Deep Nmap Scan (IPv4/IPv6)- work in progress, user flags to be added", "Capture PCAP for Specific Connection (IPv4/IPv6)", "Capture PCAPs for All Connections (IPv4/IPv6)", "Show Results", "Exit"]
+
+    output_dir = "./results"
+    os.makedirs(output_dir, exist_ok=True)
+
+    while True:
+        stdscr.clear()
+        stdscr.addstr(0, 0, "Network Tool UI (Use UP/DOWN, ENTER to select, 'q' to quit)")
+
+        for idx, option in enumerate(options):
+            x = 0
+            y = idx + 1
+            if idx == current_row:
+                stdscr.addstr(y, x, option, curses.A_REVERSE)
+            else:
+                stdscr.addstr(y, x, option)
+
+        key = stdscr.getch()
+
+        if key == curses.KEY_UP and current_row > 0:
+            current_row -= 1
+        elif key == curses.KEY_DOWN and current_row < len(options) - 1:
+            current_row += 1
+        elif key in [curses.KEY_ENTER, ord("\n")]:
+            if current_row == len(options) - 1:  # Exit
+                break
+            elif current_row == 0:  # Run All
+                run_all(output_dir, stdscr)
+            elif current_row == 1:  # Run Netstat
+                update_status(stdscr, "Running Netstat (IPv4/IPv6)...")
+                run_netstat(output_dir)
+                update_status(stdscr, "Netstat completed.")
+            elif current_row == 2:  # Run SS
+                update_status(stdscr, "Running SS (IPv4/IPv6)...")
+                run_ss(output_dir)
+                update_status(stdscr, "SS completed.")
+            elif current_row == 3:  # Run Whois for All IPs
+                update_status(stdscr, "Running Whois (IPv4/IPv6)...")
+                # Try netstat first, then ss if no connections
+                connections = run_netstat(output_dir)
+                if not connections:
+                    connections = run_ss(output_dir)
+                    if not connections:
+                        update_status(stdscr, "No active connections found. Run Netstat or SS first.")
+                        continue
+                for conn in connections:
+                    update_status(stdscr, f"Running Whois for {conn['remote_address']}...")
+                    run_whois(conn['remote_address'], output_dir)
+                update_status(stdscr, "Whois completed.")
+            elif current_row == 4:  # Run Nmap for All Connections
+                update_status(stdscr, "Running Nmap (IPv4/IPv6)...")
+                # Try netstat first, then ss if no connections
+                connections = run_netstat(output_dir)
+                if not connections:
+                    connections = run_ss(output_dir)
+                    if not connections:
+                        update_status(stdscr, "No active connections found. Run Netstat or SS first.")
+                        continue
+                for ip in [conn['remote_address'] for conn in connections]:
+                    update_status(stdscr, f"Running Nmap for {ip}...")
+                    run_nmap(ip, output_dir)
+                update_status(stdscr, "Nmap completed.")
+            elif current_row == 5:  # Run Deep Nmap Scan
+                update_status(stdscr, "Running Deep Nmap Scan (IPv4/IPv6)...")
+                selected_ip = ensure_netstat_before_nmap(output_dir, stdscr)
+                if selected_ip:
+                    update_status(stdscr, f"Running Deep Nmap Scan for {selected_ip}...")
+                    run_deep_nmap(selected_ip, output_dir, stdscr)
+                    update_status(stdscr, "Deep Nmap Scan completed.")
+            elif current_row == 6:  # Capture PCAP for Specific Connection
+                update_status(stdscr, "Starting PCAP capture for a specific connection (IPv4/IPv6)...")
+                run_pcap_capture(output_dir, stdscr)
+                update_status(stdscr, "PCAP capture completed.")
+            elif current_row == 7:  # Capture PCAPs for All Connections
+                update_status(stdscr, "Starting PCAP capture for all connections (IPv4/IPv6)...")
+                run_pcap_capture_all(output_dir, stdscr)
+                update_status(stdscr, "PCAP capture for all connections completed.")
+            elif current_row == 8:  # Show Results
+                show_results(output_dir, stdscr)
+            time.sleep(1)
+        elif key == ord('q'):  # Quit when 'q' is pressed
+            break
+
+if __name__ == "__main__":
+    curses.wrapper(main_menu)
+
+
+# GUI-modulen med tkinter.
+# Kimi Autto 25-02-27
+# gui/huvud_gui.py
+
+import tkinter as tk
+from tkinter import ttk, messagebox
+from packet_generator.generator import generera_pcap
+from replay.aterspelning import aterspela_pcap
+import threading
+
+class PaketTestarGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Pakettestare för Cisco 9606")
+        self.root.geometry("400x500")
+
+        # Sektion för paketgenerering
+        tk.Label(root, text="Generera PCAP").pack(pady=5)
+        tk.Label(root, text="Antal paket:").pack()
+        self.antal_paket = tk.Entry(root)
+        self.antal_paket.insert(0, "100000")
+        self.antal_paket.pack()
+
+        tk.Label(root, text="Utdatafil:").pack()
+        self.utfil = tk.Entry(root)
+        self.utfil.insert(0, "test_trafik.pcap")
+        self.utfil.pack()
+
+        tk.Button(root, text="Generera", command=self.starta_generering).pack(pady=5)
+
+        # Sektion för återspelning
+        tk.Label(root, text="Återspela PCAP").pack(pady=5)
+        tk.Label(root, text="Gränssnitt:").pack()
+        self.granssnitt = tk.Entry(root)
+        self.granssnitt.insert(0, "eth0")
+        self.granssnitt.pack()
+
+        tk.Label(root, text="PCAP-fil:").pack()
+        self.aterspelningsfil = tk.Entry(root)
+        self.aterspelningsfil.insert(0, "test_trafik.pcap")
+        self.aterspelningsfil.pack()
+
+        tk.Label(root, text="Hastighet:").pack()
+        self.hastighet = ttk.Combobox(root, values=["normal", "max", "mbps"])
+        self.hastighet.set("normal")
+        self.hastighet.pack()
+
+        tk.Label(root, text="Loopar:").pack()
+        self.loopar = tk.Entry(root)
+        self.loopar.insert(0, "1")
+        self.loopar.pack()
+
+        tk.Button(root, text="Återspela", command=self.starta_aterspelning).pack(pady=5)
+
+        # Statusfält
+        self.status = tk.Label(root, text="Klar", wraplength=350)
+        self.status.pack(pady=10)
+
+    def starta_generering(self):
+        def kor():
+            try:
+                antal = int(self.antal_paket.get())
+                fil = self.utfil.get()
+                self.status.config(text="Genererar...")
+                resultat = generera_pcap(antal, fil)
+                self.status.config(text=resultat)
+            except Exception as e:
+                messagebox.showerror("Fel", str(e))
+        
+        threading.Thread(target=kör, daemon=True).start()
+
+    def starta_aterspelning(self):
+        def kor():
+            try:
+                iface = self.granssnitt.get()
+                fil = self.aterspelningsfil.get()
+                hast = self.hastighet.get()
+                loop = int(self.loopar.get())
+                self.status.config(text="Återspelar...")
+                resultat = aterspela_pcap(iface, fil, hast, loop)
+                self.status.config(text=resultat)
+            except Exception as e:
+                messagebox.showerror("Fel", str(e))
+        
+        threading.Thread(target=kor, daemon=True).start()
+
+def starta_gui():
+    root = tk.Tk()
+    app = PaketTestarGUI(root)
+    root.mainloop()
+
+
+
+# Startpunkt för att köra appen.
+# Kimi Autto 25-02-27
+
+from gui.huvud_gui import starta_gui
+
+if __name__ == "__main__":
+    starta_gui()
