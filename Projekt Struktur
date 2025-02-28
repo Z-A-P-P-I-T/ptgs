@@ -1,0 +1,11 @@
+Projekt Namn/
+├── gui/
+│   ├── __init__.py
+│   └── main_gui.py        # GUI frontend
+├── packet_generator/
+│   ├── __init__.py
+│   └── generator.py      # Scapy-based PCAP generation
+├── replay/
+│   ├── __init__.py
+│   └── replay.py         # tcpreplay wrapper
+└── main.py               # Entry point to launch the app
